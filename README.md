@@ -17,6 +17,8 @@ SpaceSweeper 是一个独立开发的原创 macOS 桌面工具，基于 **Tauri 
 
 1. 找到用户可能不再需要的文件；
 2. 用透明、可逆的方式删除它们。
+3. 用户需要能操作自己的电脑，删除合理的无用文件，拒绝收费捆绑提高门槛管理自己的电脑
+4. 免费
 
 它不做病毒查杀、恶意软件检测、性能优化、启动项管理，也不读取浏览器历史等隐私数据。
 
@@ -201,21 +203,9 @@ src-tauri/target/release/bundle/dmg/SpaceSweeper_0.2.0_aarch64.dmg
 
 [Apache License 2.0](LICENSE) © 2026 Dingyuan Liu
 
-应用图标为项目资产；复用代码时请替换为自己的图标。
-
-### 致谢
-
-- [Tauri](https://tauri.app/)
-- [Rust](https://www.rust-lang.org/)
-- [React](https://react.dev/)
-- [Vite](https://vite.dev/)
-- [Rayon](https://github.com/rayon-rs/rayon)
-- [WalkDir](https://github.com/BurntSushi/walkdir)
-- [trash-rs](https://github.com/Byron/trash-rs)
-
 ### 免责声明
 
-本工具会移动文件到废纸篓。尽管内置了多层安全守卫，仍建议先在测试目录验证，再处理真实数据。作者不对因使用本工具造成的数据丢失承担责任。
+本工具会移动文件到废纸篓。尽管内置了多层安全守卫，仍建议先在测试目录验证，再处理真实数据。作者不对使用本工具造成的数据丢失承担责任。
 
 ---
 

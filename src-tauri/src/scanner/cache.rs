@@ -1,10 +1,12 @@
-//! A 类：`~/Library/Caches` 最小流式扫描器。
+//! A 类：缓存与可再生产垃圾的流式扫描器。
 //!
 //! 设计取舍：
-//! - 以 `~/Library/Caches` 的**一级子项**作为结果粒度（每个应用/工具一个条目），
+//! - 以每个白名单根目录的**一级子项**作为结果粒度（每个应用/工具/项目一个条目），
 //!   避免把几十万个缓存文件直接推给前端；条目大小递归汇总。
 //! - 并行计算条目大小，算完一个就通过 Tauri Channel 推一个，前端不必等待全量扫描。
 //! - 扫描器只展示白名单内的 safe 档路径；符号链接、`.git`、越界路径在进入列表前就被过滤。
+//!
+//! 需确认区域（ask 档）走独立入口：默认不勾选，只有用户显式确认后才允许删除。
 //!
 //! 明确不在发现范围：
 //! - `~/Library/Containers`、`~/Library/Application Support`：可能包含聊天记录、虚拟机镜像等个人数据；
@@ -32,6 +34,7 @@ pub struct CacheItem {
     pub file_count: u64,
     pub category: String,
     pub safety_tier: SafetyTier,
+    pub is_dir: bool,
     pub last_modified: Option<u64>,
     pub reason: String,
 }
@@ -78,38 +81,161 @@ pub struct ScanSummary {
     pub duration_ms: u64,
 }
 
-pub fn scan_library_caches(channel: &Channel<ScanEvent>) -> Result<ScanSummary, String> {
-    let started_at = Instant::now();
+#[derive(Debug, Clone)]
+struct CacheSource {
+    path: PathBuf,
+    category: &'static str,
+    reason: &'static str,
+}
 
+#[derive(Debug, Clone)]
+struct Candidate {
+    path: PathBuf,
+    category: &'static str,
+    reason: &'static str,
+}
+
+/// 兼容旧命令名：默认只扫描 `~/Library/Caches`，可通过 `groups` 扩展。
+pub fn scan_library_caches(
+    channel: &Channel<ScanEvent>,
+    groups: Option<Vec<String>>,
+) -> Result<ScanSummary, String> {
     let home = dirs::home_dir().ok_or_else(|| "无法定位当前用户主目录".to_string())?;
-    let root = home.join("Library/Caches");
-    let read_dir =
-        fs::read_dir(&root).map_err(|error| format!("无法读取 {}：{}", root.display(), error))?;
+    let (sources, labels) = resolve_cache_sources(&home, groups.as_deref())?;
+    let root_label = if labels.len() == 1 {
+        sources
+            .first()
+            .map(|source| source.path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| labels[0].to_string())
+    } else {
+        format!("{} 个缓存分组", labels.len())
+    };
 
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let mut skipped_entries: u64 = 0;
+    let mut candidates = Vec::new();
+    let mut skipped_entries = 0;
+    for source in &sources {
+        skipped_entries += collect_cache_children(&source.path, source, &mut candidates);
+    }
 
+    if candidates.is_empty() {
+        return Err("所选缓存目录不存在或暂时无法读取".to_string());
+    }
+
+    let policy = SafetyPolicy::macos_default();
+    scan_candidates(
+        channel,
+        &root_label,
+        candidates,
+        &policy,
+        SafetyTier::Safe,
+        skipped_entries,
+    )
+}
+
+/// 扫描 ask 档区域的一级子项。根目录本身不会进入结果，因而永远无法整根删除。
+pub fn scan_attention_areas(
+    channel: &Channel<ScanEvent>,
+    policy: &SafetyPolicy,
+) -> Result<ScanSummary, String> {
+    let home = dirs::home_dir().ok_or_else(|| "无法定位当前用户主目录".to_string())?;
+    let mut candidates = Vec::new();
+    let mut skipped_entries = 0;
+
+    for root in policy.ask_roots() {
+        if !root.is_dir() {
+            continue;
+        }
+        let note = attention_note(root, &home);
+        skipped_entries += collect_attention_children(root, note, &mut candidates);
+    }
+
+    if candidates.is_empty() {
+        return Err("需确认区域不存在或暂时无法读取".to_string());
+    }
+
+    scan_candidates(
+        channel,
+        "需确认区域",
+        candidates,
+        policy,
+        SafetyTier::Ask,
+        skipped_entries,
+    )
+}
+
+fn collect_cache_children(root: &Path, source: &CacheSource, output: &mut Vec<Candidate>) -> u64 {
+    let read_dir = match fs::read_dir(root) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return 1,
+    };
+
+    let mut skipped = 0;
     for entry in read_dir {
         match entry {
             Ok(entry) => match entry.file_type() {
-                // 符号链接不参与扫描：删除时也会被 safety 拒绝，提前过滤避免误导用户。
-                Ok(file_type) if file_type.is_symlink() => skipped_entries += 1,
-                Ok(_) => candidates.push(entry.path()),
-                Err(_) => skipped_entries += 1,
+                Ok(file_type) if file_type.is_symlink() => skipped += 1,
+                Ok(_) => {
+                    // 不清理本应用自己的审计日志，保留删除可追溯性。
+                    if entry.file_name().to_string_lossy() == "SpaceSweeper" {
+                        skipped += 1;
+                        continue;
+                    }
+                    output.push(Candidate {
+                        path: entry.path(),
+                        category: source.category,
+                        reason: source.reason,
+                    });
+                }
+                Err(_) => skipped += 1,
             },
-            Err(_) => skipped_entries += 1,
+            Err(_) => skipped += 1,
         }
     }
+    skipped
+}
 
+fn collect_attention_children(root: &Path, note: &'static str, output: &mut Vec<Candidate>) -> u64 {
+    let read_dir = match fs::read_dir(root) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return 1,
+    };
+
+    let mut skipped = 0;
+    for entry in read_dir {
+        match entry {
+            Ok(entry) => match entry.file_type() {
+                Ok(file_type) if file_type.is_symlink() => skipped += 1,
+                Ok(_) => output.push(Candidate {
+                    path: entry.path(),
+                    category: "需确认区域",
+                    reason: note,
+                }),
+                Err(_) => skipped += 1,
+            },
+            Err(_) => skipped += 1,
+        }
+    }
+    skipped
+}
+
+fn scan_candidates(
+    channel: &Channel<ScanEvent>,
+    root_label: &str,
+    candidates: Vec<Candidate>,
+    policy: &SafetyPolicy,
+    expected_tier: SafetyTier,
+    skipped_entries: u64,
+) -> Result<ScanSummary, String> {
+    let started_at = Instant::now();
     let total_entries = candidates.len();
+
     channel
         .send(ScanEvent::Started {
-            root: root.to_string_lossy().into_owned(),
+            root: root_label.to_string(),
             total_entries,
         })
         .map_err(|error| format!("无法建立扫描结果流：{error}"))?;
 
-    let policy = SafetyPolicy::macos_default();
     let items_done = AtomicUsize::new(0);
     let last_reported = AtomicUsize::new(0);
     let file_count = AtomicU64::new(0);
@@ -117,8 +243,8 @@ pub fn scan_library_caches(channel: &Channel<ScanEvent>) -> Result<ScanSummary, 
     let denied_entries = AtomicU64::new(0);
     let item_count = AtomicUsize::new(0);
 
-    candidates.par_iter().for_each(|path| {
-        let (item, skipped) = build_item(path, &policy);
+    candidates.par_iter().for_each(|candidate| {
+        let (item, skipped) = build_item(candidate, policy, expected_tier);
         denied_entries.fetch_add(skipped, Ordering::Relaxed);
         let done = items_done.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -154,7 +280,7 @@ pub fn scan_library_caches(channel: &Channel<ScanEvent>) -> Result<ScanSummary, 
 
     let duration_ms = started_at.elapsed().as_millis() as u64;
     let summary = ScanSummary {
-        root: root.to_string_lossy().into_owned(),
+        root: root_label.to_string(),
         item_count: item_count.load(Ordering::Relaxed),
         file_count: file_count.load(Ordering::Relaxed),
         total_bytes: total_bytes.load(Ordering::Relaxed),
@@ -177,10 +303,16 @@ pub fn scan_library_caches(channel: &Channel<ScanEvent>) -> Result<ScanSummary, 
     Ok(summary)
 }
 
-fn build_item(path: &Path, policy: &SafetyPolicy) -> (Option<CacheItem>, u64) {
-    // 防御性二次校验：即使扫描范围写错，也不把任何非 safe 路径送进 UI。
+fn build_item(
+    candidate: &Candidate,
+    policy: &SafetyPolicy,
+    expected_tier: SafetyTier,
+) -> (Option<CacheItem>, u64) {
+    let path = candidate.path.as_path();
+
+    // 防御性二次校验：即使扫描范围写错，也不把非预期档位送进 UI。
     match policy.classify(path) {
-        Ok(SafetyTier::Safe) => {}
+        Ok(tier) if tier == expected_tier => {}
         _ => return (None, 1),
     }
 
@@ -196,7 +328,6 @@ fn build_item(path: &Path, policy: &SafetyPolicy) -> (Option<CacheItem>, u64) {
     let Some(name) = path.file_name() else {
         return (None, size.skipped + 1);
     };
-    let is_dir = metadata.is_dir();
 
     let item = CacheItem {
         id: path.to_string_lossy().into_owned(),
@@ -204,18 +335,130 @@ fn build_item(path: &Path, policy: &SafetyPolicy) -> (Option<CacheItem>, u64) {
         name: name.to_string_lossy().into_owned(),
         size: size.bytes,
         file_count: size.files,
-        category: if is_dir {
-            "应用缓存"
-        } else {
-            "缓存文件"
-        }
-        .to_string(),
-        safety_tier: SafetyTier::Safe,
+        category: candidate.category.to_string(),
+        safety_tier: expected_tier,
+        is_dir: metadata.is_dir(),
         last_modified: modified_ms(&metadata),
-        reason: "应用缓存：删除后应用会在需要时自动重建，不影响个人文档与设置".to_string(),
+        reason: candidate.reason.to_string(),
     };
 
     (Some(item), size.skipped)
+}
+
+fn resolve_cache_sources(
+    home: &Path,
+    requested: Option<&[String]>,
+) -> Result<(Vec<CacheSource>, Vec<&'static str>), String> {
+    let selected: Vec<String> = match requested {
+        Some(groups) if !groups.is_empty() => groups.to_vec(),
+        Some(_) => return Err("请至少选择一个缓存分组".to_string()),
+        None => vec!["app".to_string()],
+    };
+
+    let mut sources = Vec::new();
+    let mut labels: Vec<&'static str> = Vec::new();
+
+    let mut add = |path: PathBuf, category: &'static str, reason: &'static str| {
+        if path.is_dir() {
+            sources.push(CacheSource {
+                path,
+                category,
+                reason,
+            });
+        }
+    };
+
+    for group in selected {
+        match group.as_str() {
+            "app" => {
+                labels.push("应用缓存");
+                add(
+                    home.join("Library/Caches"),
+                    "应用缓存",
+                    "应用缓存：删除后应用会在需要时自动重建，不影响个人文档与设置",
+                );
+            }
+            "logs" => {
+                labels.push("日志");
+                add(
+                    home.join("Library/Logs"),
+                    "日志",
+                    "日志文件：删除后应用会在需要时重新生成，通常不影响文档与设置",
+                );
+            }
+            "developer" => {
+                labels.push("开发者缓存");
+                add(
+                    home.join("Library/Developer/Xcode/DerivedData"),
+                    "开发者缓存",
+                    "Xcode 构建产物：删除后重新构建即可再生，不影响源代码",
+                );
+                add(
+                    home.join("Library/Developer/CoreSimulator/Caches"),
+                    "开发者缓存",
+                    "模拟器缓存：删除后可按需重新生成",
+                );
+            }
+            "packages" => {
+                labels.push("包管理器缓存");
+                add(
+                    home.join(".npm/_cacache"),
+                    "包管理器缓存",
+                    "npm 下载缓存：删除后需要时会重新下载",
+                );
+                add(
+                    home.join(".npm/_logs"),
+                    "包管理器缓存",
+                    "npm 日志：删除后不影响已安装依赖",
+                );
+                add(
+                    home.join(".gradle/caches"),
+                    "包管理器缓存",
+                    "Gradle 依赖缓存：删除后下次构建会重新下载",
+                );
+                add(
+                    home.join(".cache/pip"),
+                    "包管理器缓存",
+                    "pip 下载缓存：删除后需要时会重新下载",
+                );
+                add(
+                    home.join(".cargo/registry/cache"),
+                    "包管理器缓存",
+                    "Cargo 依赖缓存：删除后下次构建会重新下载",
+                );
+            }
+            other => return Err(format!("未知缓存分组：{other}")),
+        }
+    }
+
+    if sources.is_empty() {
+        return Err("所选缓存目录不存在或不可读取".to_string());
+    }
+    labels.dedup();
+    Ok((sources, labels))
+}
+
+fn attention_note(root: &Path, home: &Path) -> &'static str {
+    let relative = root
+        .strip_prefix(home)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| root.to_string_lossy().into_owned());
+
+    if relative.contains("iOS DeviceSupport") {
+        "设备符号文件：删除后需要重新连接设备生成，部分旧系统版本可能无法再生"
+    } else if relative.contains("com.docker.docker") {
+        "容器、镜像与卷数据：删除会丢失全部容器数据，且无法恢复"
+    } else if relative.contains("CoreSimulator/Devices") {
+        "模拟器设备状态：删除后模拟器数据不可恢复，需要重新创建"
+    } else if relative.contains(".ollama/models") {
+        "本地模型权重：删除后需要重新下载"
+    } else if relative.contains("huggingface") {
+        "模型缓存：删除后需要重新下载"
+    } else if relative.contains("MobileSync/Backup") {
+        "iOS 备份：属于个人数据，仅在确认不再需要时删除"
+    } else {
+        "需确认区域：删除可能影响应用或设备数据，请逐项确认"
+    }
 }
 
 fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
@@ -273,9 +516,23 @@ mod tests {
         fs::write(&file, b"data").unwrap();
         let policy = SafetyPolicy::new(vec![temp.path().to_path_buf()], vec![]);
 
-        // 白名单根目录本身不可作为条目。
-        assert!(build_item(temp.path(), &policy).0.is_none());
-        assert!(build_item(&file, &policy).0.is_some());
+        let root_candidate = Candidate {
+            path: temp.path().to_path_buf(),
+            category: "应用缓存",
+            reason: "测试",
+        };
+        assert!(build_item(&root_candidate, &policy, SafetyTier::Safe)
+            .0
+            .is_none());
+
+        let child_candidate = Candidate {
+            path: file,
+            category: "应用缓存",
+            reason: "测试",
+        };
+        assert!(build_item(&child_candidate, &policy, SafetyTier::Safe)
+            .0
+            .is_some());
     }
 
     #[test]

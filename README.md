@@ -33,45 +33,52 @@ SpaceSweeper 的差异化不在“清理得多”，而在 **发现透明、删�
 
 ### 当前功能
 
-当前版本为 `0.1.0`，已完成 P0 闭环：
+当前版本为 `0.2.0`，已完成 P0 闭环与 P1/P2/P3 功能：
 
 | 模块 | 能力 |
 | --- | --- |
-| 智能扫描 | 扫描 `~/Library/Caches`，并行计算条目大小，通过 Tauri Channel 实时推送结果 |
+| 智能扫描 | 扫描应用缓存、日志、开发者缓存与包管理器缓存；按分组流式推送结果 |
 | 大文件 | 扫描 `~/Downloads`、`~/Desktop`、`~/Documents`、`~/Movies`，默认展示 ≥100 MB 的 Top 50 |
 | 旧文件 | ≥100 MB 且 ≥365 天未修改，按“大小 × 陈旧天数”排序，Top 50 |
 | 旧安装包 | `.dmg` / `.pkg` / `.zip`，≥50 MB 且 ≥180 天，Top 50 |
-| 安全删除 | 默认移入废纸篓；删除前再次执行白名单与版本库校验 |
-| 定位 | 在 Finder 中显示所选文件 |
+| 需确认区域 | 设备符号、Docker 数据、模拟器设备、模型缓存与 iOS 备份；默认不勾选，逐项确认 |
+| 空间分析 | 目录大小树图、逐层下钻；文件可删除，目录仅定位 |
+| 自定义目录 | 原生目录选择器；主目录子目录与外接卷可做会话级删除授权，重启失效 |
+| 重复文件 | 大小分组 → 4 KB 哈希 → 完整 BLAKE3；每组至少保留一份，删除前后端复核 |
+| 卸载器 | `/Applications`、`~/Applications` 应用发现；Bundle ID 残留匹配；个人数据残留默认不勾选 |
+| 安全删除 | 默认移入废纸篓；永久删除必须显式勾选并输入确认词；删除前再次执行白名单与版本库校验 |
+| 定位 | 在 Finder 中显示所选文件或目录 |
 | 扫描控制 | 进度展示、取消扫描，取消后可查看已发现的部分结果 |
 | 权限引导 | 未授予完全磁盘访问权限时展示引导，不静默失败 |
-
-侧边栏还提供空间分析、重复文件、卸载器入口，目前为 P1/P2/P3 规划占位。
 
 ### 安全设计
 
 删除安全是本项目的第一优先级，核心守卫位于 [`safety.rs`](src-tauri/src/safety.rs)：
 
-- **白名单根目录**：只允许删除固定用户目录与缓存/日志白名单内的内容；
+- **白名单根目录**：只允许删除固定用户目录、缓存/日志白名单与会话级授权目录内的内容；
 - **规范化路径**：先 `canonicalize` 再比较，防止父级符号链接逃逸；
 - **拒绝危险路径**：`..`、符号链接、白名单根目录本身、`/System`、`/usr`、`/bin` 等系统路径全部拒绝；
 - **版本库保护**：扫描阶段跳过包含 `.git` 的仓库根目录；删除阶段向上检查祖先目录，仓库内文件即使被前端传入也会被拒绝；
 - **运行中应用保护**：直接以 Bundle ID 命名的缓存目录在对应 App 运行时跳过；
 - **默认废纸篓**：`cleaner.rs` 在 macOS 上通过 `NSFileManager` 移入废纸篓；
-- **永久删除默认不开放**：后端实现了 5 分钟有效、一次性、与路径清单绑定的一次性令牌，但当前 UI 不提供入口；
+- **永久删除 opt-in**：必须显式勾选并输入「永久删除」，后端使用 5 分钟有效、一次性、与路径清单绑定的令牌；
+- **需确认区域**：默认不勾选，必须逐项选择并勾选风险确认；运行中的 Docker、Xcode、模拟器会被跳过；
+- **会话级授权**：自定义目录/外接卷只允许主目录非 Library 子目录或 `/Volumes` 子目录，授权只存在当前进程，重启失效；
+- **重复文件保留约束**：每组至少保留一份，删除前后端复核保留项存在、大小与完整哈希一致；
+- **卸载器边界**：只允许 `/Applications` 或 `~/Applications` 下的 `.app`；以 Info.plist 的真实 Bundle ID 为准，系统应用不提供删除入口；残留必须来自固定 Library 子目录并匹配 Bundle ID/应用名；
 - **审计日志**：删除结果逐项写入 `~/Library/Logs/SpaceSweeper/audit.log`；
 - **无遥测、无自动清理、无后台常驻扫描**。
 
-「需确认」档路径（Xcode DeviceSupport、CoreSimulator Devices、Docker 数据、Ollama/HuggingFace 模型缓存、iOS 备份）已在后端白名单中预留，但当前 P0 UI 尚未开放这些入口。
+「需确认」档路径（Xcode DeviceSupport、CoreSimulator Devices、Docker 数据、Ollama/HuggingFace 模型缓存、iOS 备份）已通过智能扫描页的「需确认区域」开放。
 
 ### 架构
 
 ```mermaid
 flowchart LR
   UI["React + TypeScript UI"] -->|"Tauri IPC / Channel"| CMD["Rust commands"]
-  CMD --> SCAN["scanner/<br/>cache · large_files"]
-  CMD --> SAFETY["safety.rs<br/>whitelist · git guard"]
-  CMD --> CLEANER["cleaner.rs<br/>trash · audit"]
+  CMD --> SCAN["scanner/<br/>cache · large_files · analyze<br/>duplicates · uninstaller"]
+  CMD --> SAFETY["safety.rs<br/>whitelist · git guard · app guard"]
+  CMD --> CLEANER["cleaner.rs<br/>trash · audit · permanent token"]
   SCAN --> FS["macOS filesystem metadata"]
   CLEANER --> TRASH["Trash（可恢复）"]
   CLEANER --> LOG["audit.log"]
@@ -89,27 +96,32 @@ flowchart LR
 ```text
 .
 ├── src/                       # React 界面
-│   ├── components/            # 侧边栏、结果列表、确认框、图标
-│   ├── pages/                 # 智能扫描、大文件、规划占位页
-│   ├── hooks/                 # 大文件扫描 hook
-│   ├── lib/                   # 格式化工具
+│   ├── components/            # 侧边栏、结果列表、确认框、需确认面板、树图、图标
+│   ├── pages/                 # 智能扫描、空间分析、大文件、重复文件、卸载器
+│   ├── hooks/                 # 空间分析、重复文件、应用扫描 hook
+│   ├── lib/                   # 格式化与树图布局
 │   ├── types.ts               # 前后端共享类型
 │   └── App.tsx                # App Shell 与页面切换
 ├── src-tauri/
 │   ├── src/
-│   │   ├── safety.rs          # 路径白名单与删除守卫
+│   │   ├── safety.rs          # 路径白名单、版本库、应用包与残留守卫
 │   │   ├── cleaner.rs         # 废纸篓、审计日志、永久删除令牌
 │   │   ├── scan_manager.rs    # 扫描任务注册与取消
 │   │   ├── permissions.rs     # 完全磁盘访问权限检测
 │   │   ├── fs_util.rs         # 磁盘占用计算
 │   │   ├── scanner/
-│   │   │   ├── cache.rs       # 缓存扫描
-│   │   │   └── large_files.rs # 大文件/旧文件/旧安装包
+│   │   │   ├── cache.rs       # 缓存/日志/开发者/包管理器缓存
+│   │   │   ├── large_files.rs # 大文件/旧文件/旧安装包
+│   │   │   ├── analyze.rs     # 空间分析树
+│   │   │   ├── duplicates.rs  # 重复文件检测与删除复核
+│   │   │   ├── uninstaller.rs # 应用发现、残留匹配与卸载
+│   │   │   └── rules.rs       # 共享扫描过滤规则
 │   │   └── main.rs            # Tauri 命令入口
 │   ├── capabilities/          # Tauri 权限能力
 │   ├── icons/                 # 应用图标
 │   ├── Cargo.toml
 │   └── tauri.conf.json
+├── PROJECT_BACKLOG.md         # 本次长任务节点与验收标准
 ├── package.json
 └── vite.config.ts
 ```
@@ -144,7 +156,7 @@ npm run tauri build
 
 ```text
 src-tauri/target/release/bundle/macos/SpaceSweeper.app
-src-tauri/target/release/bundle/dmg/SpaceSweeper_0.1.0_aarch64.dmg
+src-tauri/target/release/bundle/dmg/SpaceSweeper_0.2.0_aarch64.dmg
 ```
 
 如果所在网络访问 crates.io 较慢，可以自行配置 Cargo 镜像。项目中的 `src-tauri/.cargo/` 已被 `.gitignore` 忽略，不会把个人镜像配置提交到仓库。
@@ -152,29 +164,30 @@ src-tauri/target/release/bundle/dmg/SpaceSweeper_0.1.0_aarch64.dmg
 ### 使用方式
 
 1. 打开 SpaceSweeper；
-2. 选择「智能扫描」或「大文件」；
+2. 在侧边栏选择智能扫描、空间分析、大文件、重复文件或卸载器；
 3. 查看完整路径、大小和判定理由，取消勾选不想删除的条目；
-4. 点击「移入废纸篓」并确认；
+4. 点击「移入废纸篓」并确认；需要不可恢复删除时，在确认框中显式勾选并输入「永久删除」；
 5. 在废纸篓中确认无误后清空，空间才会真正释放。
+
+自定义目录或外接卷只在当前会话内授权删除；关闭并重新打开应用后需要重新选择。
 
 完全磁盘访问权限不是默认用户目录扫描的必需项；授予后可以扫描更多受 TCC 保护的目录。授权后建议重启 App。
 
 ### 已知限制
 
 - 当前预构建产物为 Apple Silicon `arm64`，源码可在 Intel Mac 上重新构建；
-- P0 只扫描固定用户目录，不支持自定义目录或外接卷；
-- 大文件/旧文件默认只展示 Top 50；
+- 大文件/旧文件默认只展示 Top 50；重复文件最多展示 200 组，每组展示前 50 个；
+- 空间分析默认展开 4 层、每层 18 个子项；更深的目录需要单独重新分析；
 - 旧文件年龄基于修改时间；macOS APFS 的访问时间不可靠，因此不依赖 atime；
-- 空间分析、重复文件、卸载器尚未实现；
-- 永久删除 UI 未开放；
+- 卸载器只处理 `.app` 应用包，不处理 PKG 安装脚本、系统扩展、守护进程与系统应用；
+- 会话级授权目录在重启应用后失效；
 - 当前构建为 ad-hoc 签名，未做 Developer ID 公证；分发给其他用户前需要正式签名和公证。
 
 ### Roadmap
 
-- **P1**：空间分析树图、自定义目录/外接卷授权、A 类缓存路径扩展；
-- **P2**：重复文件三段式检测（大小分组 → 4 KB 哈希 → 完整 BLAKE3），每组至少保留一份；
-- **P3**：应用卸载器与残留匹配；
-- **发布**：Developer ID 签名、公证、通用二进制构建。
+- **发布**：Developer ID 签名、公证、通用二进制构建；
+- **体验**：空间分析树图缩放、重复文件按目录筛选、卸载器残留规则扩充；
+- **工程**：GitHub Actions 持续集成（`cargo test`、`cargo fmt --check`、`npm run build`）。
 
 ### 参与贡献
 
@@ -215,6 +228,6 @@ SpaceSweeper is a macOS disk space discovery and safe reclamation tool built wit
 - Git worktrees, symlinks, system paths and the scan roots themselves are rejected by the backend.
 - No malware scanning, performance tuning, startup-item management, telemetry or background scanning.
 
-The current release supports cache scanning under `~/Library/Caches` and discovery of large files, old files and old installers. A space treemap, duplicate finder and uninstaller are planned. See the Chinese sections above for the safety model, architecture, build commands and known limitations.
+The current release supports grouped cache/log/developer/package-manager scanning, large/old file discovery, a space treemap with session-scoped custom directory authorization, three-stage duplicate detection with a guaranteed retained copy, and an uninstaller with Bundle ID residual matching. Permanent deletion is opt-in and requires typed confirmation.
 
 Licensed under the [Apache License 2.0](LICENSE).

@@ -20,10 +20,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::Channel;
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
+
+use super::rules::{human_size, is_installer, should_descend};
 
 const MB: u64 = 1024 * 1024;
-const GB: u64 = 1024 * MB;
 
 pub const DEFAULT_MIN_SIZE: u64 = 100 * MB;
 pub const DEFAULT_OLD_DAYS: u64 = 365;
@@ -451,74 +452,6 @@ fn default_root_paths() -> Vec<PathBuf> {
         .map(|name| home.join(name))
         .filter(|path| path.is_dir())
         .collect()
-}
-
-fn should_descend(entry: &DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return true;
-    }
-
-    let file_type = entry.file_type();
-    if file_type.is_symlink() {
-        return false;
-    }
-
-    let name = entry.file_name().to_string_lossy();
-    if name.starts_with('.') {
-        return false;
-    }
-
-    if file_type.is_dir() {
-        if is_package_dir(&name) || is_build_dir(&name) {
-            return false;
-        }
-        // 包含 .git（目录或 worktree 文件）的目录视为仓库根，整棵子树不扫描。
-        if entry.path().join(".git").symlink_metadata().is_ok() {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn is_package_dir(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    let extension = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
-    matches!(
-        extension,
-        "app"
-            | "photoslibrary"
-            | "fcpbundle"
-            | "imovielibrary"
-            | "logicx"
-            | "band"
-            | "xcworkspace"
-            | "xcodeproj"
-    )
-}
-
-fn is_build_dir(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "node_modules" | "target" | "build" | "deriveddata" | "pods" | "dist"
-    )
-}
-
-fn is_installer(path: &Path) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(extension.as_str(), "dmg" | "pkg" | "zip")
-}
-
-fn human_size(bytes: u64) -> String {
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else {
-        format!("{} MB", bytes.max(MB) / MB)
-    }
 }
 
 fn now_ms() -> u64 {

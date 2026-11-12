@@ -3,6 +3,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   CacheItem,
   DeleteReport,
+  PermanentTicket,
   ScanEvent,
   ScanSummary,
 } from "../types";
@@ -14,6 +15,8 @@ import {
 } from "../lib/format";
 import { ScanResultList } from "../components/ScanResultList";
 import { DeleteConfirmDialog } from "../components/DeleteConfirmDialog";
+import type { DeleteConfirmOptions } from "../components/DeleteConfirmDialog";
+import { AttentionPanel } from "../components/AttentionPanel";
 import { FdaNotice } from "../components/FdaNotice";
 import {
   AlertIcon,
@@ -36,6 +39,13 @@ interface SmartScanPageProps {
   onOpenSettings: () => void;
 }
 
+const CACHE_GROUPS = [
+  { id: "app", label: "应用缓存", hint: "~/Library/Caches" },
+  { id: "logs", label: "日志", hint: "~/Library/Logs" },
+  { id: "developer", label: "开发者缓存", hint: "DerivedData / 模拟器" },
+  { id: "packages", label: "包管理器缓存", hint: "npm / pip / Cargo / Gradle" },
+];
+
 export function SmartScanPage({
   fda,
   onRecheck,
@@ -43,6 +53,7 @@ export function SmartScanPage({
 }: SmartScanPageProps) {
   const [items, setItems] = useState<CacheItem[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [groups, setGroups] = useState<Set<string>>(new Set(["app"]));
   const [scanning, setScanning] = useState(false);
   const [hasScanned, setHasScanned] = useState(false);
   const [summary, setSummary] = useState<ScanSummary | null>(null);
@@ -74,6 +85,18 @@ export function SmartScanPage({
     });
   }, [items]);
 
+  const toggleGroup = useCallback((id: string) => {
+    setGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
   const closeConfirm = useCallback(() => setConfirmOpen(false), []);
 
   const selectedItems = useMemo(
@@ -91,6 +114,10 @@ export function SmartScanPage({
 
   const startScan = async () => {
     if (scanInFlight.current) return;
+    if (groups.size === 0) {
+      setError("请至少选择一个缓存分组");
+      return;
+    }
     scanInFlight.current = true;
 
     setScanning(true);
@@ -151,6 +178,7 @@ export function SmartScanPage({
 
     try {
       const result = await invoke<ScanSummary>("scan_library_caches", {
+        groups: Array.from(groups),
         onEvent: channel,
       });
       setSummary(result);
@@ -164,16 +192,31 @@ export function SmartScanPage({
     }
   };
 
-  const confirmDelete = async () => {
+  const confirmDelete = async ({ permanent }: DeleteConfirmOptions) => {
     if (selectedItems.length === 0 || deleteInFlight.current) return;
     deleteInFlight.current = true;
     setDeleting(true);
 
     try {
-      const result = await invoke<DeleteReport>("move_items_to_trash", {
-        paths: selectedItems.map((item) => item.path),
-        allowAsk: false,
-      });
+      const paths = selectedItems.map((item) => item.path);
+      let result: DeleteReport;
+
+      if (permanent) {
+        const ticket = await invoke<PermanentTicket>(
+          "prepare_permanent_delete",
+          { paths },
+        );
+        result = await invoke<DeleteReport>("permanent_delete", {
+          paths,
+          token: ticket.token,
+          allowAsk: false,
+        });
+      } else {
+        result = await invoke<DeleteReport>("move_items_to_trash", {
+          paths,
+          allowAsk: false,
+        });
+      }
 
       const removedPaths = new Set(result.removed.map((entry) => entry.path));
       setItems((previous) =>
@@ -270,6 +313,32 @@ export function SmartScanPage({
         </div>
       )}
 
+      <section className="scan-options" aria-label="缓存扫描分组">
+        <div className="option-group">
+          <span className="option-label">缓存分组</span>
+          <div className="option-chips">
+            {CACHE_GROUPS.map((group) => (
+              <button
+                key={group.id}
+                type="button"
+                className={`option-chip${
+                  groups.has(group.id) ? " is-active" : ""
+                }`}
+                onClick={() => toggleGroup(group.id)}
+                disabled={scanning}
+                aria-pressed={groups.has(group.id)}
+              >
+                <span>{group.label}</span>
+                <small>{group.hint}</small>
+              </button>
+            ))}
+          </div>
+          <span className="option-note">
+            只扫描可再生缓存与日志；需确认区域在下方单独扫描。
+          </span>
+        </div>
+      </section>
+
       {report && (
         <div className="notice is-success">
           <span className="notice-icon">
@@ -278,17 +347,25 @@ export function SmartScanPage({
           <div className="notice-copy">
             <strong>
               {report.removed.length > 0
-                ? `已移入废纸篓 ${formatBytes(report.freedBytes)}`
-                : "没有项目被移入废纸篓"}
+                ? report.mode === "permanent"
+                  ? `已永久删除 ${formatBytes(report.freedBytes)}`
+                  : `已移入废纸篓 ${formatBytes(report.freedBytes)}`
+                : "没有项目被处理"}
             </strong>
             <p>
               {report.removed.length > 0
-                ? `${formatCount(report.removed.length)} 项已处理，可在废纸篓中「放回原处」恢复；清空废纸篓后释放空间。`
+                ? report.mode === "permanent"
+                  ? `${formatCount(report.removed.length)} 项已永久删除，无法恢复。`
+                  : `${formatCount(report.removed.length)} 项已处理，可在废纸篓中「放回原处」恢复；清空废纸篓后释放空间。`
                 : "所选项目均被安全守卫跳过，未发生删除。"}
             </p>
             {report.removed.length > 0 && (
               <details className="report-details">
-                <summary>查看已移入废纸篓的完整路径</summary>
+                <summary>
+                  {report.mode === "permanent"
+                    ? "查看已永久删除的完整路径"
+                    : "查看已移入废纸篓的完整路径"}
+                </summary>
                 <ul>
                   {report.removed.map((entry) => (
                     <li key={entry.path}>
@@ -454,7 +531,7 @@ export function SmartScanPage({
             </span>
           </div>
           <div className="actionbar-right">
-            <span className="actionbar-hint">默认移入废纸篓，可恢复</span>
+            <span className="actionbar-hint">默认移入废纸篓；可在确认框中选择永久删除</span>
             <button
               type="button"
               className="btn primary"
@@ -468,13 +545,16 @@ export function SmartScanPage({
         </div>
       )}
 
+      <AttentionPanel />
+
       <DeleteConfirmDialog
         open={confirmOpen}
         count={selectedItems.length}
         totalBytes={selectedBytes}
         busy={deleting}
         onCancel={closeConfirm}
-        onConfirm={() => void confirmDelete()}
+        onConfirm={(options) => void confirmDelete(options)}
+        allowPermanent
       />
     </div>
   );

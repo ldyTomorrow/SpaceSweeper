@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { DeleteReport, LargeFileItem } from "../types";
+import type { DeleteReport, LargeFileItem, PermanentTicket } from "../types";
 import { useLargeFilesScan } from "../hooks/useLargeFilesScan";
 import { DeleteConfirmDialog } from "../components/DeleteConfirmDialog";
+import type { DeleteConfirmOptions } from "../components/DeleteConfirmDialog";
 import { FdaNotice } from "../components/FdaNotice";
 import { LargeFileList } from "../components/LargeFileList";
 import {
@@ -215,16 +216,31 @@ export function BigFilesPage({
     }
   };
 
-  const confirmDelete = async () => {
+  const confirmDelete = async ({ permanent }: DeleteConfirmOptions) => {
     if (currentSelected.length === 0 || deleteInFlight.current) return;
     deleteInFlight.current = true;
     setDeleting(true);
 
     try {
-      const result = await invoke<DeleteReport>("move_items_to_trash", {
-        paths: currentSelected.map((item) => item.path),
-        allowAsk: false,
-      });
+      const paths = currentSelected.map((item) => item.path);
+      let result: DeleteReport;
+
+      if (permanent) {
+        const ticket = await invoke<PermanentTicket>(
+          "prepare_permanent_delete",
+          { paths },
+        );
+        result = await invoke<DeleteReport>("permanent_delete", {
+          paths,
+          token: ticket.token,
+          allowAsk: false,
+        });
+      } else {
+        result = await invoke<DeleteReport>("move_items_to_trash", {
+          paths,
+          allowAsk: false,
+        });
+      }
 
       const removed = new Set(result.removed.map((entry) => entry.path));
       removePaths(removed);
@@ -316,17 +332,25 @@ export function BigFilesPage({
           <div className="notice-copy">
             <strong>
               {report.removed.length > 0
-                ? `已移入废纸篓 ${formatBytes(report.freedBytes)}`
-                : "没有文件被移入废纸篓"}
+                ? report.mode === "permanent"
+                  ? `已永久删除 ${formatBytes(report.freedBytes)}`
+                  : `已移入废纸篓 ${formatBytes(report.freedBytes)}`
+                : "没有文件被处理"}
             </strong>
             <p>
               {report.removed.length > 0
-                ? `${formatCount(report.removed.length)} 项已处理，可在废纸篓中「放回原处」恢复；清空废纸篓后释放空间。`
+                ? report.mode === "permanent"
+                  ? `${formatCount(report.removed.length)} 项已永久删除，无法恢复。`
+                  : `${formatCount(report.removed.length)} 项已处理，可在废纸篓中「放回原处」恢复；清空废纸篓后释放空间。`
                 : "所选文件均被安全守卫跳过，未发生删除。"}
             </p>
             {report.removed.length > 0 && (
               <details className="report-details">
-                <summary>查看已移入废纸篓的完整路径</summary>
+                <summary>
+                  {report.mode === "permanent"
+                    ? "查看已永久删除的完整路径"
+                    : "查看已移入废纸篓的完整路径"}
+                </summary>
                 <ul>
                   {report.removed.map((entry) => (
                     <li key={entry.path}>
@@ -579,7 +603,7 @@ export function BigFilesPage({
             <span className="selection-bytes">{formatBytes(selectedBytes)}</span>
           </div>
           <div className="actionbar-right">
-            <span className="actionbar-hint">仅删除文件，默认移入废纸篓</span>
+            <span className="actionbar-hint">仅删除文件；可在确认框中选择永久删除</span>
             <button
               type="button"
               className="btn primary"
@@ -599,8 +623,9 @@ export function BigFilesPage({
         totalBytes={selectedBytes}
         busy={deleting}
         onCancel={closeConfirm}
-        onConfirm={() => void confirmDelete()}
+        onConfirm={(options) => void confirmDelete(options)}
         notes={DELETE_NOTES}
+        allowPermanent
       />
     </div>
   );

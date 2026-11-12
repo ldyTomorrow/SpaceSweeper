@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BigFilesPage } from "./pages/BigFilesPage";
-import { ComingSoonPage } from "./pages/ComingSoonPage";
+import { DuplicatesPage } from "./pages/DuplicatesPage";
 import { SmartScanPage } from "./pages/SmartScanPage";
+import { SpaceAnalysisPage } from "./pages/SpaceAnalysisPage";
+import { UninstallerPage } from "./pages/UninstallerPage";
 import { Sidebar } from "./components/Sidebar";
 import type { PageKey } from "./components/Sidebar";
 import { AlertIcon, CloseIcon } from "./components/Icons";
@@ -31,43 +33,9 @@ export default function App() {
     });
   }, []);
 
-  const renderPlannedPage = () => {
-    switch (activePage) {
-      case "space":
-        return (
-          <ComingSoonPage
-            eyebrow="SPACE LENS · 空间分析"
-            title="从树图看见空间去了哪里。"
-            description="按目录聚合大小，逐层下钻；权限不足的目录会优雅跳过，不阻塞其他结果。"
-            phase="P1 规划"
-          />
-        );
-      case "duplicates":
-        return (
-          <ComingSoonPage
-            eyebrow="DUPLICATES · 重复文件"
-            title="相同内容，只保留一份。"
-            description="大小分组、前 4 KB 哈希、完整哈希三段式检测；每组保留项不可勾选。"
-            phase="P2 规划"
-          />
-        );
-      case "uninstaller":
-        return (
-          <ComingSoonPage
-            eyebrow="UNINSTALLER · 卸载器"
-            title="把应用和残留一起带走。"
-            description="按 Bundle ID 匹配应用残留，安全档默认勾选，个人数据残留必须逐项确认。"
-            phase="P3 规划"
-          />
-        );
-      default:
-        return null;
-    }
-  };
-
   return (
     <div className="app">
-      <Sidebar active={activePage} onSelect={setActivePage} version="0.1.0" />
+      <Sidebar active={activePage} onSelect={setActivePage} version="0.2.0" />
 
       <div className="workspace">
         <header className="topbar">
@@ -135,7 +103,37 @@ export default function App() {
             />
           </div>
 
-          {renderPlannedPage()}
+          <div
+            className={`page-slot${
+              activePage === "duplicates" ? "" : " is-hidden"
+            }`}
+          >
+            <DuplicatesPage
+              fda={fda}
+              onRecheck={() => void checkFda()}
+              onOpenSettings={openSettings}
+            />
+          </div>
+
+          <div className={`page-slot${activePage === "space" ? "" : " is-hidden"}`}>
+            <SpaceAnalysisPage
+              fda={fda}
+              onRecheck={() => void checkFda()}
+              onOpenSettings={openSettings}
+            />
+          </div>
+
+          <div
+            className={`page-slot${
+              activePage === "uninstaller" ? "" : " is-hidden"
+            }`}
+          >
+            <UninstallerPage
+              fda={fda}
+              onRecheck={() => void checkFda()}
+              onOpenSettings={openSettings}
+            />
+          </div>
         </main>
       </div>
     </div>

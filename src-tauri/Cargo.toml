@@ -1,6 +1,6 @@
 [package]
 name = "spacesweeper"
-version = "0.1.0"
+version = "0.2.0"
 description = "macOS 磁盘空间发现与安全回收工具"
 authors = ["Dingyuan Liu"]
 license = "Apache-2.0"

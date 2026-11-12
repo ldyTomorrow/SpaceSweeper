@@ -180,21 +180,22 @@ impl PermanentDeleteSession {
     }
 }
 
-/// 生产入口：默认移入废纸篓。
+/// 使用 AppState 中的会话级白名单执行删除（包含用户授权的自定义目录）。
 /// `trash` 在 macOS 上调用 NSFileManager.trashItemAtURL，文件会保留原始路径信息，
 /// Finder 废纸篓里的「放回原处」因此可用。
-pub fn move_to_trash(paths: &[PathBuf], allow_ask: bool) -> DeleteReport {
-    let policy = SafetyPolicy::macos_default();
-    move_to_trash_with(paths, allow_ask, &policy, |path| {
-        match trash::delete(path) {
-            Ok(()) => {
-                audit("TRASH_OK", path);
-                Ok(())
-            }
-            Err(error) => {
-                audit("TRASH_FAIL", path);
-                Err(error.to_string())
-            }
+pub fn move_to_trash_with_policy(
+    paths: &[PathBuf],
+    allow_ask: bool,
+    policy: &SafetyPolicy,
+) -> DeleteReport {
+    move_to_trash_with(paths, allow_ask, policy, |path| match trash::delete(path) {
+        Ok(()) => {
+            audit("TRASH_OK", path);
+            Ok(())
+        }
+        Err(error) => {
+            audit("TRASH_FAIL", path);
+            Err(error.to_string())
         }
     })
 }
@@ -350,7 +351,7 @@ fn process_is_running(name: &str) -> bool {
 
 /// 删除审计：控制台 + `~/Library/Logs/SpaceSweeper/audit.log`。
 /// 单元测试不写用户主目录，避免测试产生副作用。
-fn audit(action: &str, path: &Path) {
+pub(crate) fn audit(action: &str, path: &Path) {
     eprintln!("[{action}] {}", path.display());
     if cfg!(test) {
         return;

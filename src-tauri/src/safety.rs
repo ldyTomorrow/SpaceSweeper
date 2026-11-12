@@ -42,6 +42,9 @@ pub enum RejectReason {
     AskNotConfirmed,
     OutsideWhitelist,
     ForbiddenLocation,
+    NotApplicationBundle,
+    NotAppResidual,
+    ProtectedApplication,
 }
 
 impl fmt::Display for RejectReason {
@@ -56,6 +59,9 @@ impl fmt::Display for RejectReason {
             Self::AskNotConfirmed => "该路径属于需确认档，未获得显式授权",
             Self::OutsideWhitelist => "路径不在删除白名单内",
             Self::ForbiddenLocation => "系统保护路径，绝不删除",
+            Self::NotApplicationBundle => "不是可卸载的 .app 应用包",
+            Self::NotAppResidual => "不是该应用的可识别残留路径",
+            Self::ProtectedApplication => "系统应用或受保护应用，绝不卸载",
         };
         f.write_str(message)
     }
@@ -75,6 +81,23 @@ impl SafetyPolicy {
             safe_roots: safe_roots.into_iter().filter_map(resolve_root).collect(),
             ask_roots: ask_roots.into_iter().filter_map(resolve_root).collect(),
         }
+    }
+
+    /// 会话级授权：只追加到当前进程内的安全根，不写入磁盘，重启后自动失效。
+    pub fn add_safe_root(&mut self, root: PathBuf) -> Result<PathBuf, String> {
+        let resolved = resolve_root(root).ok_or_else(|| "该目录不能作为删除授权根".to_string())?;
+        if !self.safe_roots.contains(&resolved) {
+            self.safe_roots.push(resolved.clone());
+        }
+        Ok(resolved)
+    }
+
+    pub fn safe_roots(&self) -> &[PathBuf] {
+        &self.safe_roots
+    }
+
+    pub fn ask_roots(&self) -> &[PathBuf] {
+        &self.ask_roots
     }
 
     /// 生产环境的白名单。
@@ -191,6 +214,28 @@ impl SafetyPolicy {
         }
         Ok(tier)
     }
+
+    /// 卸载器专用：只允许 `/Applications` 或 `~/Applications` 下的 `.app` 包。
+    pub fn validate_application(path: &Path, bundle_id: Option<&str>) -> Result<(), RejectReason> {
+        let mut roots = vec![PathBuf::from("/Applications")];
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home.join("Applications"));
+        }
+        let current = current_app_bundle();
+        validate_application_in(path, bundle_id, &roots, current.as_deref())
+    }
+
+    /// 卸载器专用：校验 Library 内的应用残留是否属于该 Bundle ID / 应用名。
+    pub fn validate_app_residual(
+        &self,
+        path: &Path,
+        bundle_id: &str,
+        app_name: &str,
+        allow_ask: bool,
+    ) -> Result<SafetyTier, RejectReason> {
+        let home = dirs::home_dir().ok_or(RejectReason::Missing)?;
+        validate_app_residual_in(path, bundle_id, app_name, allow_ask, &home)
+    }
 }
 
 /// 规范约定的入口：生产代码请用 `SafetyPolicy` 复用白名单，此函数便于单点断言。
@@ -199,6 +244,269 @@ pub fn is_safe_path(path: &Path) -> bool {
     SafetyPolicy::macos_default()
         .validate_for_deletion(path, false)
         .is_ok()
+}
+
+/// 空间分析是只读操作，允许主目录（含 Library）与 `/Volumes` 下的具体目录，
+/// 但不允许系统根目录或整个卷根。删除权限仍由 `SafetyPolicy` 单独决定。
+pub fn is_analysis_root_allowed(path: &Path) -> bool {
+    if !path.is_absolute() || path == Path::new("/") || is_forbidden_location(path) {
+        // 主目录本身被 is_forbidden_location 拒绝，但作为只读分析根是允许的。
+        return dirs::home_dir().map(|home| path == home).unwrap_or(false);
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        if path == home || path.starts_with(&home) {
+            return true;
+        }
+    }
+
+    path.starts_with(Path::new("/Volumes")) && path != Path::new("/Volumes")
+}
+
+fn validate_application_in(
+    path: &Path,
+    bundle_id: Option<&str>,
+    roots: &[PathBuf],
+    current_app: Option<&Path>,
+) -> Result<(), RejectReason> {
+    check_lexical(path)?;
+
+    let metadata = path.symlink_metadata().map_err(|_| RejectReason::Missing)?;
+    if metadata.file_type().is_symlink() {
+        return Err(RejectReason::Symlink);
+    }
+    if !metadata.is_dir() || !is_app_bundle_name(path) {
+        return Err(RejectReason::NotApplicationBundle);
+    }
+
+    let canonical = path.canonicalize().map_err(|_| RejectReason::Missing)?;
+    if has_git_component(&canonical) {
+        return Err(RejectReason::GitRepository);
+    }
+    if is_forbidden_location(&canonical) {
+        return Err(RejectReason::ForbiddenLocation);
+    }
+    if bundle_id
+        .map(|id| id.to_ascii_lowercase().starts_with("com.apple."))
+        .unwrap_or(false)
+    {
+        return Err(RejectReason::ProtectedApplication);
+    }
+    if current_app
+        .map(|current| current == canonical)
+        .unwrap_or(false)
+    {
+        return Err(RejectReason::ProtectedApplication);
+    }
+
+    for root in roots {
+        let Ok(resolved_root) = root.canonicalize() else {
+            continue;
+        };
+        if canonical == resolved_root || !canonical.starts_with(&resolved_root) {
+            continue;
+        }
+        if !has_nested_app_ancestor(&canonical, &resolved_root) {
+            return Ok(());
+        }
+    }
+
+    Err(RejectReason::NotApplicationBundle)
+}
+
+const APP_RESIDUAL_ROOTS: &[(&str, SafetyTier)] = &[
+    ("Library/Caches", SafetyTier::Safe),
+    ("Library/Logs", SafetyTier::Safe),
+    ("Library/HTTPStorages", SafetyTier::Safe),
+    ("Library/WebKit", SafetyTier::Safe),
+    ("Library/Cookies", SafetyTier::Safe),
+    ("Library/Application Support", SafetyTier::Ask),
+    ("Library/Containers", SafetyTier::Ask),
+    ("Library/Group Containers", SafetyTier::Ask),
+    ("Library/Application Scripts", SafetyTier::Ask),
+    ("Library/Preferences", SafetyTier::Ask),
+    ("Library/Preferences/ByHost", SafetyTier::Ask),
+    ("Library/Saved Application State", SafetyTier::Ask),
+    ("Library/LaunchAgents", SafetyTier::Ask),
+];
+
+fn validate_app_residual_in(
+    path: &Path,
+    bundle_id: &str,
+    app_name: &str,
+    allow_ask: bool,
+    home: &Path,
+) -> Result<SafetyTier, RejectReason> {
+    check_lexical(path)?;
+
+    let metadata = path.symlink_metadata().map_err(|_| RejectReason::Missing)?;
+    if metadata.file_type().is_symlink() {
+        return Err(RejectReason::Symlink);
+    }
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(RejectReason::NotAppResidual);
+    }
+
+    let canonical = path.canonicalize().map_err(|_| RejectReason::Missing)?;
+    if has_git_component(&canonical) {
+        return Err(RejectReason::GitRepository);
+    }
+    if is_inside_git_worktree(&canonical) {
+        return Err(RejectReason::GitRepository);
+    }
+
+    let Some(name) = canonical.file_name().map(|name| name.to_string_lossy()) else {
+        return Err(RejectReason::NotAppResidual);
+    };
+
+    let mut matched: Option<SafetyTier> = None;
+    let mut matched_depth = 0;
+
+    for (relative, tier) in APP_RESIDUAL_ROOTS {
+        let root = home.join(relative);
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        if canonical == root || canonical.parent() != Some(root.as_path()) {
+            continue;
+        }
+        if !residual_name_matches(&name, bundle_id, app_name, relative) {
+            continue;
+        }
+        let depth = root.components().count();
+        if depth >= matched_depth {
+            matched = Some(*tier);
+            matched_depth = depth;
+        }
+    }
+
+    let tier = matched.ok_or(RejectReason::NotAppResidual)?;
+    if tier == SafetyTier::Ask && !allow_ask {
+        return Err(RejectReason::AskNotConfirmed);
+    }
+    Ok(tier)
+}
+
+fn residual_name_matches(name: &str, bundle_id: &str, app_name: &str, relative: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix(".plist")
+        .or_else(|| lower.strip_suffix(".savedstate"))
+        .or_else(|| lower.strip_suffix(".binarycookies"))
+        .unwrap_or(&lower);
+    let bundle = bundle_id.trim().to_ascii_lowercase();
+    let app = app_name.trim().to_ascii_lowercase();
+
+    let suffix_allowed = relative.ends_with("ByHost")
+        || relative.ends_with("Saved Application State")
+        || relative.ends_with("Cookies")
+        || relative.ends_with("LaunchAgents");
+
+    let bundle_match = !bundle.is_empty()
+        && (stem == bundle
+            || (suffix_allowed && stem.starts_with(&format!("{bundle}.")))
+            || (relative.contains("Group Containers") && lower.contains(&bundle)));
+    let app_match = !app.is_empty() && stem == app;
+    bundle_match || app_match
+}
+
+fn is_app_bundle_name(path: &Path) -> bool {
+    path.extension()
+        .map(|ext| ext.to_string_lossy().eq_ignore_ascii_case("app"))
+        .unwrap_or(false)
+}
+
+fn has_nested_app_ancestor(path: &Path, root: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
+    };
+    let components: Vec<&Path> = relative.ancestors().collect();
+    components
+        .iter()
+        .skip(1)
+        .any(|component| component != &Path::new("") && is_app_bundle_name(component))
+}
+
+fn current_app_bundle() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    executable
+        .ancestors()
+        .find(|path| is_app_bundle_name(path))
+        .and_then(|path| path.canonicalize().ok())
+}
+
+/// 校验用户主动选择的自定义目录能否成为会话级删除授权根。
+///
+/// 只允许主目录内（排除 `Library` 与隐藏目录）或 `/Volumes` 外接卷内的目录；
+/// 主目录本身、卷根、系统保护路径、符号链接一律拒绝。
+pub fn authorize_session_root(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("请选择绝对路径".to_string());
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("路径包含 ..，已拒绝".to_string());
+    }
+
+    let metadata = path
+        .symlink_metadata()
+        .map_err(|_| "所选目录不存在或无权访问".to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("不授权符号链接目录".to_string());
+    }
+    if !metadata.is_dir() {
+        return Err("请选择目录，而不是文件".to_string());
+    }
+
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "无法解析所选目录".to_string())?;
+    let home = dirs::home_dir();
+    validate_session_root(&canonical, home.as_deref(), Path::new("/Volumes"))?;
+    Ok(canonical)
+}
+
+fn validate_session_root(
+    canonical: &Path,
+    home: Option<&Path>,
+    volumes: &Path,
+) -> Result<(), String> {
+    if canonical == Path::new("/") || is_forbidden_location(canonical) {
+        return Err("系统保护路径不能授权".to_string());
+    }
+
+    if let Some(home) = home {
+        if canonical == home {
+            return Err("不能授权主目录本身，请选择具体子目录".to_string());
+        }
+        if let Ok(relative) = canonical.strip_prefix(home) {
+            let mut components = relative.components();
+            match components.next() {
+                Some(Component::Normal(name)) => {
+                    let name = name.to_string_lossy();
+                    if name.eq_ignore_ascii_case("Library") {
+                        return Err("Library 目录不开放自定义授权".to_string());
+                    }
+                    if name.starts_with('.') {
+                        return Err("隐藏目录不开放自定义授权".to_string());
+                    }
+                    return Ok(());
+                }
+                _ => return Err("不能授权主目录本身".to_string()),
+            }
+        }
+    }
+
+    if canonical == volumes {
+        return Err("不能授权整个 /Volumes，请选择具体外接卷或目录".to_string());
+    }
+    if canonical.starts_with(volumes) {
+        return Ok(());
+    }
+
+    Err("只允许授权主目录或外接卷内的目录".to_string())
 }
 
 fn resolve_root(root: PathBuf) -> Option<PathBuf> {
@@ -584,6 +892,144 @@ mod tests {
         assert_eq!(
             f.policy.classify(&f.safe_root.join("no-such-cache")),
             Err(RejectReason::Missing)
+        );
+    }
+
+    #[test]
+    fn session_root_accepts_home_subdirectory_and_external_volume() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let volumes = temp.path().join("Volumes");
+        let project = home.join("Projects");
+        let external = volumes.join("ExternalDisk");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&external).unwrap();
+
+        assert!(validate_session_root(&project, Some(&home), &volumes).is_ok());
+        assert!(validate_session_root(&external, Some(&home), &volumes).is_ok());
+    }
+
+    #[test]
+    fn session_root_rejects_dangerous_locations() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let volumes = temp.path().join("Volumes");
+        let project = home.join("Projects");
+        let library = home.join("Library");
+        let hidden = home.join(".ssh");
+        let external = volumes.join("ExternalDisk");
+        for path in [&project, &library, &hidden, &external] {
+            fs::create_dir_all(path).unwrap();
+        }
+
+        assert!(validate_session_root(&home, Some(&home), &volumes).is_err());
+        assert!(validate_session_root(&library, Some(&home), &volumes).is_err());
+        assert!(validate_session_root(&hidden, Some(&home), &volumes).is_err());
+        assert!(validate_session_root(&volumes, Some(&home), &volumes).is_err());
+        assert!(validate_session_root(Path::new("/System"), Some(&home), &volumes).is_err());
+        assert!(validate_session_root(temp.path(), Some(&home), &volumes).is_err());
+    }
+
+    #[test]
+    fn session_root_rejects_symlink() {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("Projects");
+        fs::create_dir_all(&target).unwrap();
+        let link = temp.path().join("ProjectsLink");
+        symlink(&target, &link).unwrap();
+
+        assert!(authorize_session_root(&link).is_err());
+    }
+
+    #[test]
+    fn application_validation_accepts_only_top_level_app_bundles() {
+        let temp = TempDir::new().unwrap();
+        let apps = temp.path().join("Applications");
+        let app = apps.join("Foo.app");
+        let nested = app.join("Contents/Helpers/Bar.app");
+        let outside = temp.path().join("Other/Foo.app");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        let roots = vec![apps];
+        assert!(validate_application_in(&app, None, &roots, None).is_ok());
+        assert_eq!(
+            validate_application_in(&nested, None, &roots, None),
+            Err(RejectReason::NotApplicationBundle)
+        );
+        assert_eq!(
+            validate_application_in(&outside, None, &roots, None),
+            Err(RejectReason::NotApplicationBundle)
+        );
+        assert_eq!(
+            validate_application_in(&app, Some("com.apple.Safari"), &roots, None),
+            Err(RejectReason::ProtectedApplication)
+        );
+
+        let link = temp.path().join("Linked.app");
+        symlink(&app, &link).unwrap();
+        assert_eq!(
+            validate_application_in(&link, None, &roots, None),
+            Err(RejectReason::Symlink)
+        );
+    }
+
+    #[test]
+    fn residual_validation_matches_bundle_id_and_classifies_tiers() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let safe = home.join("Library/Caches/com.example.foo");
+        let logs_by_name = home.join("Library/Logs/Foo");
+        let ask = home.join("Library/Application Support/com.example.foo");
+        let prefs = home.join("Library/Preferences/com.example.foo.plist");
+        let group = home.join("Library/Group Containers/TEAMID.group.com.example.foo");
+        let other = home.join("Library/Caches/other.app");
+        for path in [&safe, &logs_by_name, &ask, &prefs, &group, &other] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if path.extension().is_some() {
+                fs::write(path, b"plist").unwrap();
+            } else {
+                fs::create_dir_all(path).unwrap();
+            }
+        }
+
+        assert_eq!(
+            validate_app_residual_in(&safe, "com.example.foo", "Foo", false, &home),
+            Ok(SafetyTier::Safe)
+        );
+        assert_eq!(
+            validate_app_residual_in(&logs_by_name, "com.example.foo", "Foo", false, &home),
+            Ok(SafetyTier::Safe)
+        );
+        assert_eq!(
+            validate_app_residual_in(&ask, "com.example.foo", "Foo", false, &home),
+            Err(RejectReason::AskNotConfirmed)
+        );
+        assert_eq!(
+            validate_app_residual_in(&ask, "com.example.foo", "Foo", true, &home),
+            Ok(SafetyTier::Ask)
+        );
+        assert_eq!(
+            validate_app_residual_in(&prefs, "com.example.foo", "Foo", true, &home),
+            Ok(SafetyTier::Ask)
+        );
+        assert_eq!(
+            validate_app_residual_in(&group, "com.example.foo", "Foo", true, &home),
+            Ok(SafetyTier::Ask)
+        );
+        assert_eq!(
+            validate_app_residual_in(&other, "com.example.foo", "Foo", false, &home),
+            Err(RejectReason::NotAppResidual)
+        );
+        assert_eq!(
+            validate_app_residual_in(
+                &home.join("Library/Caches"),
+                "com.example.foo",
+                "Foo",
+                false,
+                &home
+            ),
+            Err(RejectReason::NotAppResidual)
         );
     }
 }

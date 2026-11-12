@@ -8,6 +8,8 @@ interface ScanResultListProps {
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
+  allowSelectAll?: boolean;
+  toolbarHint?: string;
 }
 
 export function ScanResultList({
@@ -15,6 +17,8 @@ export function ScanResultList({
   selected,
   onToggle,
   onToggleAll,
+  allowSelectAll = true,
+  toolbarHint,
 }: ScanResultListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -31,21 +35,26 @@ export function ScanResultList({
   return (
     <div className="result-list">
       <div className="list-toolbar">
-        <label className="checkline">
-          <span className="checkbox">
-            <input
-              ref={selectAllRef}
-              type="checkbox"
-              checked={allSelected}
-              onChange={onToggleAll}
-              aria-label="全选扫描结果"
-            />
-            <span className="box" aria-hidden />
-          </span>
-          全选
-        </label>
+        {allowSelectAll ? (
+          <label className="checkline">
+            <span className="checkbox">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allSelected}
+                onChange={onToggleAll}
+                aria-label="全选扫描结果"
+              />
+              <span className="box" aria-hidden />
+            </span>
+            全选
+          </label>
+        ) : (
+          <span className="checkline">逐项选择</span>
+        )}
         <span className="list-count">
-          {formatCount(items.length)} 项 · safe 档默认勾选
+          {formatCount(items.length)} 项 ·{" "}
+          {toolbarHint ?? "safe 档默认勾选"}
         </span>
       </div>
 
@@ -62,7 +71,7 @@ export function ScanResultList({
         {items.map((item, index) => {
           const checked = selected.has(item.id);
           const expanded = expandedId === item.id;
-          const isDirectory = item.category === "应用缓存";
+          const isDirectory = item.isDir;
 
           return (
             <div

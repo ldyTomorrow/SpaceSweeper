@@ -18,15 +18,14 @@ interface SidebarItem {
   label: string;
   hint: string;
   icon: typeof ScanIcon;
-  planned?: string;
 }
 
 const ITEMS: SidebarItem[] = [
   { key: "smart", label: "智能扫描", hint: "缓存清理", icon: ScanIcon },
-  { key: "space", label: "空间分析", hint: "目录树图", icon: ChartIcon, planned: "P1" },
+  { key: "space", label: "空间分析", hint: "目录树图", icon: ChartIcon },
   { key: "large", label: "大文件", hint: "大文件与旧文件", icon: FileIcon },
-  { key: "duplicates", label: "重复文件", hint: "内容去重", icon: CopyIcon, planned: "P2" },
-  { key: "uninstaller", label: "卸载器", hint: "应用残留", icon: AppsIcon, planned: "P3" },
+  { key: "duplicates", label: "重复文件", hint: "内容去重", icon: CopyIcon },
+  { key: "uninstaller", label: "卸载器", hint: "应用残留", icon: AppsIcon },
 ];
 
 interface SidebarProps {
@@ -47,18 +46,15 @@ export function Sidebar({ active, onSelect, version }: SidebarProps) {
         {ITEMS.map((item) => {
           const Icon = item.icon;
           const isActive = item.key === active;
-          const isPlanned = Boolean(item.planned);
 
           return (
             <button
               key={item.key}
               type="button"
-              className={`sidebar-item${isActive ? " is-active" : ""}${
-                isPlanned ? " is-planned" : ""
-              }`}
+              className={`sidebar-item${isActive ? " is-active" : ""}`}
               onClick={() => onSelect(item.key)}
               aria-current={isActive ? "page" : undefined}
-              title={`${item.label} · ${item.hint}${item.planned ? `（${item.planned} 规划）` : ""}`}
+              title={`${item.label} · ${item.hint}`}
             >
               <span className="sidebar-icon">
                 <Icon size={17} />
@@ -67,7 +63,6 @@ export function Sidebar({ active, onSelect, version }: SidebarProps) {
                 <span className="sidebar-label">{item.label}</span>
                 <span className="sidebar-hint">{item.hint}</span>
               </span>
-              {item.planned && <span className="sidebar-badge">{item.planned}</span>}
             </button>
           );
         })}

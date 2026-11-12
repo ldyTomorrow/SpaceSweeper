@@ -1,0 +1,16 @@
+node_modules/
+dist/
+release/
+.screenshots/
+.trae-html-share-packages/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/.cargo/
+.trae/
+.vscode/
+.idea/
+.DS_Store
+*.local
+*.log
+.env
+.env.*

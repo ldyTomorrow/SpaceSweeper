@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # Linux 专用 GTK 依赖，macOS 目标不会编译；当前 Tauri/tao/wry 仍固定 gtk ^0.18。
+      # glib 0.20 修复了 GHSA-wrw7-89jp-8q8g，但 gtk 0.18 无法使用该版本。
+      # 上游升级到 gtk >= 0.20 后，此忽略规则会自动放行新版本。
+      - dependency-name: "glib"
+        versions: ["< 0.20.0"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

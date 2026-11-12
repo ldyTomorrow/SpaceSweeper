@@ -184,6 +184,8 @@ npm run tauri build
 - 修改 `safety.rs` 后必须跑路径逃逸、根目录、符号链接、祖先 `.git`、应用包与残留匹配测试。
 - 卸载器以 Info.plist 的真实 Bundle ID 为准，前端传入的 Bundle ID 只用于一致性校验，不能用于绕过系统应用保护。
 - 重复文件删除会重新计算完整 BLAKE3；不要在 UI 层自行放宽“每组保留一份”的约束。
+- `glib 0.18.5` 的 `GHSA-wrw7-89jp-8q8g` 来自 Linux 专用 GTK 链，macOS 目标不编译；不要仅为消除告警强制升级 glib，当前 Tauri/tao/wry 固定 `gtk ^0.18`。验证命令：`cargo tree --target aarch64-apple-darwin -i glib@0.18.5`。
+- `proc-macro-error 1.0.4` 是 `glib-macros` 带入的 Linux 专用未维护依赖，随 gtk 上游升级一并移除。
 - 空间分析目录节点永远不可删除；只有文件节点在 `SafetyPolicy` 放行后可选。
 - macOS APFS 的 atime 不可靠；旧文件判断使用 mtime，不要静默改成 atime。
 - 当前预构建产物是 arm64，未做 Developer ID 公证。

@@ -48,6 +48,17 @@ SpaceSweeper 会移动用户文件，安全问题的优先级高于普通功能�
 - 应用残留只允许固定 Library 子目录的直接子项，并匹配 Bundle ID 或应用名；
 - 删除结果写入 `~/Library/Logs/SpaceSweeper/audit.log`。
 
+## 依赖漏洞例外
+
+以下告警来自 Linux 专用 GTK 依赖链。SpaceSweeper 当前只构建 macOS 应用，这些 crate 不会进入 macOS 目标的编译图；可以用 `cargo tree --target aarch64-apple-darwin -i glib@0.18.5` 验证输出为空。
+
+| 告警 | 依赖 | 处置 |
+| --- | --- | --- |
+| `GHSA-wrw7-89jp-8q8g` / `RUSTSEC-2024-0429` | `glib 0.18.5` | 漏洞位于 GTK/Linux 路径，macOS 不编译。修复版本 `glib 0.20`，但当前 Tauri、tao、wry 仍要求 `gtk ^0.18`，无法在不破坏上游兼容性的前提下强制升级。已在 `.github/dependabot.yml` 忽略 `< 0.20.0`，上游支持 gtk 0.20 后自动放行。 |
+| `RUSTSEC-2024-0370` | `proc-macro-error 1.0.4` | 该 crate 已停止维护，仅通过 Linux 专用 `glib-macros` 进入锁文件；macOS 目标不编译，无运行时影响。随 glib/gtk 上游升级一并移除。 |
+
+重新评估条件：Tauri、tao、wry 或 gtk 发布支持 `gtk >= 0.20` 的稳定版本时，升级依赖并删除对应忽略规则。当前 Dependabot 告警可以在 GitHub 安全页面以「Vulnerable code is not in path」原因关闭。
+
 ## 不在范围内
 
 - 病毒、木马或恶意软件检测；

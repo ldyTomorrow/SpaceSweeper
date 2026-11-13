@@ -13,7 +13,7 @@
 > 先看清，再决定。  
 > 一个独立的 macOS 文件发现与安全回收工具。
 
-SpaceSweeper 是一个独立开发的原创 macOS 桌面工具，基于 **Tauri 2 + Rust + React/TypeScript**，只做两件事：
+SpaceSweeper 是一个独立开发的原创 macOS 桌面工具，基于 **Tauri 2 + Rust + React/TypeScript**，核心目标：
 
 1. 找到用户可能不再需要的文件；
 2. 用透明、可逆的方式删除它们。
@@ -21,6 +21,31 @@ SpaceSweeper 是一个独立开发的原创 macOS 桌面工具，基于 **Tauri 
 4. 免费
 
 它不做病毒查杀、恶意软件检测、性能优化、启动项管理，也不读取浏览器历史等隐私数据。
+
+## 下载安装
+
+当前版本：**v0.2.0**（Apple Silicon / arm64）
+
+| 安装包 | 说明 | 大小 |
+| --- | --- | --- |
+| [DMG 安装包](https://github.com/ldyTomorrow/SpaceSweeper/raw/main/downloads/SpaceSweeper_0.2.0_aarch64.dmg) | 打开后把 SpaceSweeper 拖入 Applications | 4.6 MB |
+| [PKG 安装包](https://github.com/ldyTomorrow/SpaceSweeper/raw/main/downloads/SpaceSweeper_0.2.0_installer.pkg) | 双击安装到 Applications | 3.8 MB |
+
+- 系统要求：macOS 12+，当前预构建包仅支持 Apple Silicon（arm64）；Intel Mac 请从源码构建。
+- 当前为 ad-hoc 签名，未做 Developer ID 公证。首次打开若被 macOS 拦截，请右键选择「打开」。
+- 安装前请退出旧版本，并替换 Applications 中的 SpaceSweeper。
+- 如果直链不可用，可进入 [`downloads/`](downloads/) 目录下载。
+- 校验值：
+
+<details>
+<summary>SHA-256</summary>
+
+```text
+9df257c356c271286ce4257a4faf69cb247a3ba3bf7cfbd02e6b43958fda94b3  SpaceSweeper_0.2.0_aarch64.dmg
+719de6a62a8c21e639199f0603336ad6be90e7e04069126bb70c768a909e7310  SpaceSweeper_0.2.0_installer.pkg
+```
+
+</details>
 
 ## 中文
 
@@ -219,5 +244,7 @@ SpaceSweeper is a macOS disk space discovery and safe reclamation tool built wit
 - No malware scanning, performance tuning, startup-item management, telemetry or background scanning.
 
 The current release supports grouped cache/log/developer/package-manager scanning, large/old file discovery, a space treemap with session-scoped custom directory authorization, three-stage duplicate detection with a guaranteed retained copy, and an uninstaller with Bundle ID residual matching. Permanent deletion is opt-in and requires typed confirmation.
+
+Prebuilt Apple Silicon installers are available in the download section above and in [`downloads/`](downloads/). They are ad-hoc signed and not notarized.
 
 Licensed under the [Apache License 2.0](LICENSE).

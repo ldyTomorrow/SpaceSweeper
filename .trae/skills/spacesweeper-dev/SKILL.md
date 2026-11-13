@@ -16,11 +16,11 @@ description: Guides SpaceSweeper development with file routing, safety rules, te
 
 - 产品：独立开发的 macOS 磁盘空间发现与安全回收工具。
 - 技术栈：Tauri 2 + Rust + React 18 + TypeScript + Vite。
-- 版本：`0.2.0`，P0 + P1/P2/P3 功能已完成，等待用户验收。
+- 版本：`0.2.0`，P0 + P1/P2/P3 功能已完成，安装包已发布到 `downloads/`。
 - 分支：`dev` 日常开发；`main` 保持稳定/可发布。
 - 远程：`git@github.com:ldyTomrrom/SpaceSweeper.git`。
 - 许可证：Apache-2.0。
-- P0 基线提交：`b8bfcc0`；0.2.0 长任务改动在当前 `dev` 工作区，提交后以 `git log` 为准。
+- P0 基线提交：`b8bfcc0`；0.2.0 已合并到 `main`（`d6e9f6a`），发布安装包提交以 `git log` 为准。
 - 非目标：病毒查杀、恶意软件检测、性能优化、启动项管理、隐私数据清理、自动清理、遥测、第三方清理软件对比。
 
 ## 架构速览
@@ -91,11 +91,13 @@ React UI
 | `src-tauri/tauri.conf.json` | 窗口、构建、签名配置 | 打包、窗口、应用标识 |
 | `package.json` / `vite.config.ts` | 前端依赖与构建 | 前端依赖、构建配置 |
 | `README.md` / `CONTRIBUTING.md` / `SECURITY.md` | 用户与贡献者文档 | 行为、安全、发布说明变化 |
+| `downloads/` | 供人直接下载的 DMG/PKG 安装包 | 更新安装包、下载链接或校验值 |
 | `LICENSE` | Apache-2.0 | 许可证相关 |
 
 默认不要读取：
 
 - `node_modules/`、`dist/`、`release/`
+- `downloads/` 下的二进制安装包（只列出文件名/校验值，不读取内容）
 - `src-tauri/target/`、`src-tauri/gen/`、`src-tauri/.cargo/`
 - `package-lock.json`、`src-tauri/Cargo.lock`（除非排查依赖版本/锁定问题）
 - `src-tauri/icons/` 下生成的各尺寸图标
@@ -114,7 +116,7 @@ React UI
 | 侧边栏/页面导航 | `App.tsx`、`Sidebar.tsx`、对应 `pages/*`、`styles.css` |
 | FDA/权限引导 | `permissions.rs`、`FdaNotice.tsx`、`App.tsx` |
 | 新增扫描器 | `scanner/mod.rs`、最接近的现有扫描器、`scan_manager.rs`、`main.rs`、`types.ts` |
-| 打包/发布 | `package.json`、`tauri.conf.json`、`Cargo.toml`、README「快速开始」 |
+| 打包/发布 | `package.json`、`tauri.conf.json`、`Cargo.toml`、README「下载安装」、`downloads/` |
 | 文档/许可证 | `README.md`、`CONTRIBUTING.md`、`SECURITY.md`、`LICENSE`、`PROJECT_BACKLOG.md`、`package.json`、`Cargo.toml` |
 
 读取测试：Rust 单测在对应 `.rs` 文件的 `#[cfg(test)]` 模块；先用 `git grep "#[cfg(test)]"` 或符号名定位，不要整文件通读。
@@ -148,13 +150,22 @@ npm run tauri build
 - `cargo test` 当前基线为 54 项通过（0.2.0）。
 - `npm run tauri build` 生成 `.app` 与 DMG；当前为 ad-hoc 签名，未公证。
 - `src-tauri/.cargo/config.toml` 是本地镜像配置，已被忽略；不要提交。
-- `release/` 是本地产物目录，不进入 Git。
+- `release/` 是本地产物目录，不进入 Git；直接下载的安装包只提交到 `downloads/`。
+
+### 发布安装包
+
+1. 在最新 `dev` 上运行 `npm run tauri build`；
+2. 从已签名 `.app` 生成 PKG（`pkgbuild`）；
+3. 把 DMG/PKG 以版本号命名复制到 `downloads/`；
+4. 更新 README 顶部「下载安装」的文件名、大小、SHA-256；
+5. 运行 `shasum -a 256 downloads/*` 并核对链接；
+6. 提交到 `dev`，合并到 `main` 后推送。
 
 ## Git 与协作
 
 - 开发在 `dev`：`git switch dev` → 修改 → 测试 → commit → `git push`。
 - `main` 保持稳定；功能完成后通过 PR 从 `dev` 合并到 `main`。
-- 不要强制推送 `main`，不要提交 `release/`、`target/`、`node_modules/`、`.cargo/` 或私钥。
+- 不要强制推送 `main`，不要提交 `release/`、`target/`、`node_modules/`、`.cargo/` 或私钥；唯一例外是 `downloads/` 下的 DMG/PKG 发布件。
 - 提交信息使用 Conventional Commits，例如 `feat(scanner): ...`、`fix(safety): ...`。
 - 许可证为 Apache-2.0；新增源文件沿用现有版权与许可约定。
 - 不重新引入任何第三方清理软件的名称、对比或“复刻”表述；产品定位是独立原创工具。
@@ -189,6 +200,7 @@ npm run tauri build
 - 空间分析目录节点永远不可删除；只有文件节点在 `SafetyPolicy` 放行后可选。
 - macOS APFS 的 atime 不可靠；旧文件判断使用 mtime，不要静默改成 atime。
 - 当前预构建产物是 arm64，未做 Developer ID 公证。
+- 更新安装包时必须同步更新 README 下载区的文件名、大小和 SHA-256；不要只替换 `downloads/` 文件。
 
 ## Skill 更新协议
 
@@ -210,8 +222,8 @@ npm run tauri build
 
 保持本文件低于 500 行；长文档放 `references/` 并按需链接，不要复制整份代码。
 
-最后更新：2026-11-12
+最后更新：2026-11-13
 
 P0 基线：`b8bfcc0`
 
-0.2.0 基线提交：`ac58655`
+0.2.0 基线提交：`d6e9f6a`

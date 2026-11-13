@@ -28,8 +28,8 @@ SpaceSweeper 是一个独立开发的原创 macOS 桌面工具，基于 **Tauri 
 
 | 安装包 | 说明 | 大小 |
 | --- | --- | --- |
-| [DMG 安装包](https://github.com/ldyTomrrom/SpaceSweeper/raw/main/downloads/SpaceSweeper_0.2.0_aarch64.dmg) | 打开后把 SpaceSweeper 拖入 Applications | 4.6 MB |
-| [PKG 安装包](https://github.com/ldyTomrrom/SpaceSweeper/raw/main/downloads/SpaceSweeper_0.2.0_installer.pkg) | 双击安装到 Applications | 3.8 MB |
+| [DMG 安装包](https://github.com/ldyTomorrow/SpaceSweeper/raw/main/downloads/SpaceSweeper_0.2.0_aarch64.dmg) | 打开后把 SpaceSweeper 拖入 Applications | 4.6 MB |
+| [PKG 安装包](https://github.com/ldyTomorrow/SpaceSweeper/raw/main/downloads/SpaceSweeper_0.2.0_installer.pkg) | 双击安装到 Applications | 3.8 MB |
 
 - 系统要求：macOS 12+，当前预构建包仅支持 Apple Silicon（arm64）；Intel Mac 请从源码构建。
 - 当前为 ad-hoc 签名，未做 Developer ID 公证。首次打开若被 macOS 拦截，请右键选择「打开」。

@@ -18,7 +18,7 @@ description: Guides SpaceSweeper development with file routing, safety rules, te
 - 技术栈：Tauri 2 + Rust + React 18 + TypeScript + Vite。
 - 版本：`0.2.0`，P0 + P1/P2/P3 功能已完成，安装包已发布到 `downloads/`。
 - 分支：`dev` 日常开发；`main` 保持稳定/可发布。
-- 远程：`git@github.com:ldyTomrrom/SpaceSweeper.git`。
+- 远程：`git@github.com:ldyTomorrow/SpaceSweeper.git`。
 - 许可证：Apache-2.0。
 - P0 基线提交：`b8bfcc0`；0.2.0 已合并到 `main`（`d6e9f6a`），发布安装包提交以 `git log` 为准。
 - 非目标：病毒查杀、恶意软件检测、性能优化、启动项管理、隐私数据清理、自动清理、遥测、第三方清理软件对比。
